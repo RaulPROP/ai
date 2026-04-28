@@ -568,10 +568,20 @@ type RecoveredToolCall = {
 async function extractToolCallsFromReasoning(
   reasoning: string,
 ): Promise<RecoveredToolCall[]> {
-  const candidates = getReasoningJsonCandidates(reasoning);
   const recovered: RecoveredToolCall[] = [];
   const seen: Record<string, boolean> = {};
 
+  const xmlToolCalls = extractQwenXmlToolCalls(reasoning);
+  for (const toolCall of xmlToolCalls) {
+    const dedupeKey = `${toolCall.name}\u0000${toolCall.arguments}`;
+    if (seen[dedupeKey]) {
+      continue;
+    }
+    seen[dedupeKey] = true;
+    recovered.push(toolCall);
+  }
+
+  const candidates = getReasoningJsonCandidates(reasoning);
   for (const candidate of candidates) {
     const parseResult = await safeParseJSON({ text: candidate });
     if (!parseResult.success) {
@@ -586,6 +596,37 @@ async function extractToolCallsFromReasoning(
       seen[dedupeKey] = true;
       recovered.push(toolCall);
     }
+  }
+
+  return recovered;
+}
+
+function extractQwenXmlToolCalls(reasoning: string): RecoveredToolCall[] {
+  const recovered: RecoveredToolCall[] = [];
+  const toolCallRegex = /<tool_call>([\s\S]*?)<\/tool_call>/g;
+  let match = toolCallRegex.exec(reasoning);
+
+  while (match != null) {
+    const toolCallContent = match[1]?.trim();
+    if (toolCallContent != null && toolCallContent.length > 0) {
+      const functionMatch =
+        /^<function=([A-Za-z0-9_.:-]+)>([\s\S]*?)<\/function>$/.exec(
+          toolCallContent,
+        );
+
+      if (functionMatch != null) {
+        const toolName = functionMatch[1]?.trim();
+        const rawArguments = functionMatch[2]?.trim() ?? '';
+        if (toolName != null && toolName.length > 0) {
+          recovered.push({
+            name: toolName,
+            arguments: rawArguments.length > 0 ? rawArguments : '{}',
+          });
+        }
+      }
+    }
+
+    match = toolCallRegex.exec(reasoning);
   }
 
   return recovered;
